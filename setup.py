@@ -17,7 +17,7 @@ setup(
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[
-        "tensorflow>=2.8.0",
+        "tensorflow>=2.8.0,<=2.12.0",
         "scikit-learn",
         "numpy",
         "h5py",
