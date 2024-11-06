@@ -64,7 +64,7 @@ class LocalAttention(keras.layers.Layer):
         activation="swish",
         kq_proj=True,
         dropout=False,
-        g_update=False,
+        g_update="dv",
         **kwargs
     ):
         """_summary_
@@ -74,7 +74,7 @@ class LocalAttention(keras.layers.Layer):
             num_head (int, optional): Number of head attention use. head dim will be dim // num_head. Defaults to 8.
             v_proj (bool, optional): A Boolen for whether using value project or not. Defaults to True.
             scale (float, optional): A scalar for normalization attention value (default to Transformer paper). Defaults to 0.5.
-            g_update (bool, optional): A Boolen for whether using geometrical update in SCANN+ or not. Defaults to False.
+            g_update (str, optional): A str for whether using geometrical update type in SCANN+ or not. Defaults to dv - distance+voronoi.
             name (str, optional):  Defaults to 'LA_layer'.
         """
         super(LocalAttention, self).__init__(**kwargs)
@@ -115,7 +115,7 @@ class LocalAttention(keras.layers.Layer):
         if self.dropout:
             self.drop_out = tf.keras.layers.Dropout(0.05)
 
-    def call(self, atom_query, atom_neighbor, neighbor_geometry, mask, neighbor_weight=None):
+    def call(self, atom_query, atom_neighbor, neighbor_geometry, mask, neighbor_weight=None, neighbor_cos_angles=None):
         """
         Args:
             atom_query:     A tensor of size [batch_size, len_atom_centers, dim]. Center representation
@@ -138,7 +138,7 @@ class LocalAttention(keras.layers.Layer):
         # Shape neighbor_weighted [B, M, N, embedding_dim ]
         atom_neighbor = tf.reshape(atom_neighbor, [bs, qlen, nlen, self.dim])
 
-        if self.g_update:
+        if self.g_update == "dv":
             geometry_update = self.filter_geo(
                 tf.concat(
                     [
@@ -151,6 +151,22 @@ class LocalAttention(keras.layers.Layer):
             )
 
             neighbor_geometry = self.layer_norm_g(geometry_update + neighbor_geometry)
+
+        elif self.g_update == "dvc":
+            geometry_update = self.filter_geo(
+                tf.concat(
+                    [
+                        tf.repeat(tf.expand_dims(atom_query, 2), nlen, 2),
+                        neighbor_geometry,
+                        atom_neighbor,
+                    ],
+                    -1,
+                )
+            )
+
+            geometry_update = tf.einsum("bmkd,bmnkd->bmnd", geometry_update, neighbor_cos_angles)
+            neighbor_geometry = self.layer_norm_g(geometry_update + neighbor_geometry)
+
         else:
             neighbor_geometry = self.filter_geo(neighbor_geometry) * neighbor_weight
 

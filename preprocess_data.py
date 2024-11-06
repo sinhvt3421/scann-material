@@ -32,7 +32,7 @@ def init_dataset(dataset="qm9", save_path="", d_t=4.0, w_t=0.2, p=8):
         save_path=os.path.join(
             save_path,
             dataset,
-            "{}_data_neighbor_dt{}_wt{}.npy".format(dataset, d_t, w_t),
+            "{}_data_neighbor_v_dt{}_wt{}.npy".format(dataset, d_t, w_t),
         ),
         d_t=d_t,
         w_t=w_t,

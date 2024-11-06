@@ -62,37 +62,20 @@ class SCANN:
         self.config = config
         self.model = None
         self.mean, self.std = 0, 1
+        self.trainIter, self.validIter, self.testIter = None, None, None
 
         if "target_mean" in self.config["hyper"]:
             self.mean = float(self.config["hyper"]["target_mean"])
             self.std = float(self.config["hyper"]["target_std"])
 
-        if mode == "train" or mode == "eval":
-            if pretrained:
-                print("load pretrained model from ", pretrained, "\n")
-                self.model = create_model_pretrained(pretrained)
-                self.config["hyper"]["pretrained"] = pretrained
-
-            else:
-                self.model = create_model(self.config)
-        else:
-            model = load_model(pretrained, custom_objects=_CUSTOM_OBJECTS)
-
-            attention_output = model.get_layer("global_attention").output[0]
-            model_infer = tf.keras.Model(inputs=model.input, outputs=[model.output, attention_output])
-            self.model = model_infer
+        self.model = create_model(self.config)
+        if pretrained:
+            self.model.load_weights(pretrained)
 
     @classmethod
     def load_model_infer(cls, path):
         model = load_model(path, custom_objects=_CUSTOM_OBJECTS)
 
-        attention_output = model.get_layer("global_attention").output[0]
-        model_infer = tf.keras.Model(inputs=model.input, outputs=[model.output, attention_output])
-        return model_infer
-
-    @classmethod
-    def load_model(cls, path):
-        model = create_model_pretrained(path)
         return model
 
     def prepare_dataset(self, split=True):
@@ -145,6 +128,7 @@ class SCANN:
                     shuffle=(len(indices) == len(train)),
                     feature=self.config["model"]["feature"],
                     g_update=self.config["model"]["g_update"],
+                    converter=self.config["hyper"]["target_scale"],
                 )
                 for indices in (train, valid, test)
             ]
@@ -158,6 +142,7 @@ class SCANN:
                 use_ring=self.config["model"]["use_ring"],
                 feature=self.config["model"]["feature"],
                 g_update=self.config["model"]["g_update"],
+                converter=self.config["hyper"]["target_scale"],
             )
 
     def create_callbacks(self):
@@ -169,14 +154,14 @@ class SCANN:
                     self.config["hyper"]["target"],
                     self.config["hyper"]["target"],
                 ),
-                monitor="val_mae",
+                monitor="val_predict_property_mae",
                 save_weights_only=False,
                 verbose=2,
                 save_best_only=True,
             )
         )
 
-        callbacks.append(EarlyStopping(monitor="val_mae", patience=200))
+        callbacks.append(EarlyStopping(monitor="val_predict_property_mae", patience=200))
 
         if self.config["hyper"]["scheduler"] == "sgdr":
             lr = SGDRC(
@@ -208,9 +193,9 @@ class SCANN:
             )
 
         self.model.compile(
-            loss=root_mean_squared_error,
+            loss=[root_mean_squared_error, None, None],
             optimizer=tf.keras.optimizers.Adam(lr, decay=1e-5),
-            metrics=["mae", r2_square],
+            metrics=[["mae", r2_square], None, None],
         )
 
         if not os.path.exists(
@@ -263,7 +248,7 @@ class SCANN:
         y = []
         for i in range(len(data)):
             inputs, target = data.__getitem__(i)
-            output = self.model.predict(inputs)
+            output, _, _ = self.model.predict(inputs)
 
             y.extend(list(target))
             y_predict.extend(list(np.squeeze(output)))
@@ -301,8 +286,8 @@ class SCANN:
                 "{}_{}/report.txt".format(self.config["hyper"]["save_path"], self.config["hyper"]["target"]),
                 "w",
             ) as f:
-                f.write("Training MAE: " + str(min(self.hist.history["mae"]) * self.std) + "\n")
-                f.write("Val MAE: " + str(min(self.hist.history["val_mae"]) * self.std) + "\n")
+                f.write("Training MAE: " + str(min(self.hist.history["predict_property_mae"]) * self.std) + "\n")
+                f.write("Val MAE: " + str(min(self.hist.history["val_predict_property_mae"]) * self.std) + "\n")
                 f.write(
                     "Test MAE: "
                     + str(mean_absolute_error(y, y_predict) * self.std)
@@ -312,11 +297,13 @@ class SCANN:
 
             print("Saved model record for dataset")
 
-    def predict_data(self, ip):
-        out = self.model.predict(ip)
-        if len(out) == 2:
-            return out[0] * self.std + self.mean, out[1]
-        return out * self.std + self.mean
+    def predict_ga(self, ip):
+        prop, ga, rep = self.model.predict(ip)
+        return prop / self.config["hyper"]["target_scale"] * self.std + self.mean, ga
+
+    def predict_rep(self, ip):
+        prop, ga, rep = self.model.predict(ip)
+        return prop / self.config["hyper"]["target_scale"] * self.std + self.mean, ga, rep
 
 
 def create_model_pretrained(pretrained):
@@ -328,7 +315,6 @@ def create_model_pretrained(pretrained):
 
 def create_model(config):
     cfm = config["model"]
-
     if cfm["feature"] == "atomic":
         shape = (None,)
     if cfm["feature"] == "cgcnn":
@@ -377,7 +363,7 @@ def create_model(config):
 
     neighbor_distance = GaussianExpansion(np.linspace(0, cfm["gaussian_d"], 20, dtype="float32"))(neighbor_distance)
 
-    if cfm["g_update"]:
+    if cfm["g_update"] == "dv":
         neighbor_distance = Dense(cfm["local_dim"], activation="swish", name="neighbor_d", dtype="float32")(
             neighbor_distance
         )
@@ -387,10 +373,35 @@ def create_model(config):
             neighbor_weight
         )
         geometry_features = Multiply(name="geometry_features")([neighbor_distance, neighbor_weight])
+
+    elif cfm["g_update"] == "dvc":
+        neighbor_cos_angles = Input(name="neighbor_cos_angles", shape=(None, None, None), dtype="float32")
+        inputs.append(neighbor_cos_angles)
+
+        neighbor_cos_angles = GaussianExpansion(np.linspace(-1, 1, 20, dtype="float32"))(neighbor_cos_angles)
+
+        neighbor_cos_angles = Dense(
+            cfm["local_dim"],
+            activation="swish",
+            name="neighbor_a",
+            dtype="float32",
+        )(neighbor_cos_angles)
+
+        neighbor_distance = Dense(cfm["local_dim"], activation="swish", name="neighbor_d", dtype="float32")(
+            neighbor_distance
+        )
+        neighbor_weight = GaussianExpansion(np.linspace(0, np.pi * 2, 20, dtype="float32"))(neighbor_weight)
+
+        neighbor_weight = Dense(cfm["local_dim"], activation="swish", name="neighbor_w", dtype="float32")(
+            neighbor_weight
+        )
+
+        geometry_features = Multiply(name="geometry_features")([neighbor_distance, neighbor_weight])
     else:
+
         neighbor_weight = tf.expand_dims(neighbor_weight, -1)
 
-    def local_attention_block(c, n_in, n_g, n_m, n_w=None):
+    def local_attention_block(c, n_in, n_g, n_m, n_w=None, n_c=None):
         # Local attention for local structure representation
         attn_local, context, g_f = LocalAttention(
             v_proj=False,
@@ -400,7 +411,7 @@ def create_model(config):
             activation="swish",
             dropout=cfm["use_drop"],
             g_update=cfm["g_update"],
-        )(c, n_in, n_g, n_m, n_w)
+        )(c, n_in, n_g, n_m, n_w, n_c)
         if cfm["use_attn_norm"]:
             # 2 Forward Norm layers
             centers = ResidualNorm(cfm["local_dim"])(context)
@@ -411,14 +422,15 @@ def create_model(config):
 
     # Local Attention recursive layers
     for i in range(cfm["n_attention"]):
-        if cfm["g_update"]:
-            centers, attn_local, geometry_features = local_attention_block(
-                centers, neighbor_indices, geometry_features, neighbor_mask
-            )
+
+        if cfm["g_update"] == "dvc":
+            arg = (centers, neighbor_indices, geometry_features, neighbor_mask, None, neighbor_cos_angles)
+        elif cfm["g_update"] == "dv":
+            arg = (centers, neighbor_indices, geometry_features, neighbor_mask)
         else:
-            centers, attn_local, _ = local_attention_block(
-                centers, neighbor_indices, neighbor_distance, neighbor_mask, neighbor_weight
-            )
+            arg = (centers, neighbor_indices, neighbor_distance, neighbor_mask, neighbor_weight)
+
+        centers, attn_local, geometry_features = local_attention_block(*arg)
 
     # Dense layer after Local Attention -> representation for each local structure [B, M, d]
     centers = Dense(
@@ -442,11 +454,11 @@ def create_model(config):
     )(struc_rep)
 
     # Shape predict_property [B, 1]
-    predict_property = Dense(
-        1, name="predict_property", activation=mrelu if config["hyper"]["target"] == "e_b" else None
-    )(struc_rep)
-
-    model = tf.keras.Model(inputs=inputs, outputs=[predict_property])
+    # predict_property = Dense(
+    #     1, name="predict_property", activation=mrelu if config["hyper"]["target"] == "e_b" else None
+    # )(struc_rep)
+    predict_property = Dense(1, name="predict_property", activation=None)(struc_rep)
+    model = tf.keras.Model(inputs=inputs, outputs=[predict_property, attn_global, struc_rep])
 
     model.summary()
 

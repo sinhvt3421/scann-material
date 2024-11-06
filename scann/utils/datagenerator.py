@@ -4,7 +4,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.utils import Sequence
 
-from .general import GaussianDistance, pad_nested_sequences, pad_sequence
+from .general import pad_nested_sequences, pad_sequence, pad_distance_vectors
 from scann.utils.dataset import atomic_features
 
 
@@ -18,11 +18,11 @@ class DataIterator(Sequence):
         data_energy,
         data_neighbor,
         batch_size=32,
-        converter=False,
+        converter=1.0,
         use_ring=False,
         shuffle=False,
         feature="atomic",
-        g_update=False,
+        g_update="dv",
     ):
         """
         Args:
@@ -30,7 +30,7 @@ class DataIterator(Sequence):
             data_neighbor (list): _description_
             indices (dict): Index for train, valid, test
             batch_size (int, optional): Defaults to 32.
-            converter (bool, optional): Scale target value. Defaults to True.
+            converter (bool, optional): Scale target value. Defaults to 1.0.
             use_ring (bool, optional): Use ring aromatic information. Defaults to False.
             centers (list, optional): Gaussian expand centers. Defaults to np.linspace(0, 4, 80).
             feature (str, optional): Feature for atoms representation. Atomic numbers or CGCNN features
@@ -46,12 +46,17 @@ class DataIterator(Sequence):
         self.use_ring = use_ring
 
         self.weight_index = 3  # Using angle normalized weights information
-        if g_update:
+        self.distance_index = -2
+        self.c_index = -1
+
+        if g_update == "dv":
             self.weight_index = 2  # Using angle information
+
+        self.g_update = g_update
 
         self.feature = feature
 
-        if converter:
+        if converter > 1.0:
             self.converter = 1000  # meV
         else:
             self.converter = 1.0  # eV
@@ -92,7 +97,7 @@ class DataIterator(Sequence):
         # Padding local weight and distance
         local_weight = [[[n[self.weight_index] for n in lc] for lc in p] for p in batch_nei]
 
-        local_distance = [[[n[-1] for n in lc] for lc in p] for p in batch_nei]
+        local_distance = [[[n[self.distance_index] for n in lc] for lc in p] for p in batch_nei]
 
         pad_local_weight = pad_nested_sequences(local_weight, max_length_neighbor, max_length_center, dtype="float32")
 
@@ -119,7 +124,21 @@ class DataIterator(Sequence):
                 value=0,
                 dtype="int32",
             )
-
+        if self.g_update == "dvc":
+            # Get angle-based information
+            local_dvector = [[[n[self.c_index] for n in lc] for lc in p] for p in batch_nei]
+            pad_local_dvector = pad_distance_vectors(
+                local_dvector,
+                max_length_neighbor,
+                max_length_center,
+                value=0,
+                dtype="float32",
+            )
+            neighbor_cos_angles = np.einsum(
+                "bmij,bmkj-> bmik",
+                pad_local_dvector,
+                pad_local_dvector,
+            )
         inputs = {
             "atomic": pad_atom,
             "atom_mask": np.expand_dims(mask_atom, -1),
@@ -128,6 +147,8 @@ class DataIterator(Sequence):
             "neighbor_weight": pad_local_weight,
             "neighbor_distance": pad_local_distance,
         }
+        if self.g_update == "dvc":
+            inputs["neighbor_cos_angles"] = neighbor_cos_angles
 
         if self.use_ring:
             inputs["ring_aromatic"] = pad_extra

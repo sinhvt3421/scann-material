@@ -34,7 +34,7 @@ def main(args):
     config = yaml.safe_load(open(os.path.join(args.trained_model, "config.yaml")))
 
     print("Load pretrained weight for target ", config["hyper"]["target"])
-    SCANN = SCANN(
+    scann = SCANN(
         config,
         os.path.join(
             args.trained_model,
@@ -45,17 +45,17 @@ def main(args):
     )
 
     print("Load data for trained model: ", config["hyper"]["data_energy_path"])
-    SCANN.prepare_dataset(split=False)
+    scann.prepare_dataset(split=False)
 
     ga_scores = []
     struct_energy = []
     y = []
     idx = 0
-    data = SCANN.dataIter
+    data = scann.dataIter
 
     for i in range(len(data)):
         inputs, target = data.__getitem__(i)
-        energy, attn_global = SCANN.predict_data(inputs)
+        energy, attn_global = scann.predict_data(inputs)
 
         ga_scores.extend(attn_global)
 

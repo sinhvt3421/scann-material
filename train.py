@@ -50,7 +50,7 @@ def main(args):
     if args.mode == "train":
         print("Start Model training", "\n")
         start = time.time()
-        scann.train(1000)
+        scann.train(500)
 
         print("Training time: ", time.time() - start, "\n")
 

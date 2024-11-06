@@ -11,6 +11,28 @@ from scann.utils.dataset import atomic_numbers, atoms_symbol
 from .voronoi_neighbor import compute_voronoi_neighbor
 
 
+def pad_distance_vectors(vectors, max_len_1, max_len_2, dtype="float32", value=0):
+    pad_sq = []
+    for v in vectors:
+        if len(v) == 0:
+            x = np.full((1, max_len_1, 3), value, dtype=dtype)
+            pad_sq.append(x)
+            continue
+        x = np.full((len(v), max_len_1, 3), value, dtype=dtype)
+        for i, s in enumerate(v):
+            trunc = s[-max_len_1:]
+            if len(trunc) > 0:
+                trunc = np.asarray(trunc, dtype=dtype)
+                x[i, : len(trunc)] = trunc
+        pad_sq.append(x)
+    x = np.full((len(pad_sq), max_len_2, max_len_1, 3), value, dtype=dtype)
+    for i, s in enumerate(pad_sq):
+        trunc = s[-max_len_2:]
+        trunc = np.asarray(trunc, dtype=dtype)
+        x[i, : len(trunc) :] = trunc
+    return x
+
+
 def pad_sequence(sequences, maxlen=None, dtype="int32", value=0, padding="post"):
     num_samples = len(sequences)
     sample_shape = ()
@@ -125,14 +147,18 @@ def load_dataset(dataset, dataset_neighbor, target_prop, use_ref=False, use_ring
         print("Using ring aromatic information", "\n")
 
     data_energy = [
-        [d["Atomic"], float(d["Properties"][target_prop]), np.stack([d["Features"][x] for x in d["Features"]], -1)]
-        if use_ring
-        else [
-            d["Atomic"],
-            float(d["Properties"][target_prop]) - float(d["Properties"]["Ref_energy"]),
-        ]
-        if use_ref
-        else [d["Atomic"], float(d["Properties"][target_prop])]
+        (
+            [d["Atomic"], float(d["Properties"][target_prop]), np.stack([d["Features"][x] for x in d["Features"]], -1)]
+            if use_ring
+            else (
+                [
+                    d["Atomic"],
+                    float(d["Properties"][target_prop]) - float(d["Properties"]["Ref_energy"]),
+                ]
+                if use_ref
+                else [d["Atomic"], float(d["Properties"][target_prop])]
+            )
+        )
         for d in data_full
     ]
 
