@@ -229,7 +229,7 @@ def load_file(file, mol=False):
         return None
 
 
-def prepare_input_pmt(struct, d_t=4.0, w_t=0.4, angle=True):
+def prepare_input_pmt(struct, d_t=4.0, w_t=0.4, angle=True, cos=False):
     """
 
     Args:
@@ -251,11 +251,22 @@ def prepare_input_pmt(struct, d_t=4.0, w_t=0.4, angle=True):
     local_distance = np.array(
         [
             pad_sequence(
-                [[n[-1] for n in lc] for lc in neighbors],
+                [[n[-2] for n in lc] for lc in neighbors],
                 dtype="float32",
             )
         ]
     )
+    if cos:
+        local_dvector = [[[n[-1] for n in lc] for lc in p] for p in neighbors]
+        pad_local_dvector = pad_sequence(
+            local_dvector,
+            dtype="float32",
+        )
+        neighbor_cos_angles = np.einsum(
+            "bmij,bmkj-> bmik",
+            pad_local_dvector,
+            pad_local_dvector,
+        )
 
     atomics = np.array([struct.atomic_numbers], "int32")
     mask_atom = atomics != 0
@@ -268,5 +279,6 @@ def prepare_input_pmt(struct, d_t=4.0, w_t=0.4, angle=True):
         "neighbor_weight": local_weight,
         "neighbor_distance": local_distance,
     }
-
+    if cos:
+        inputs["neighbor_cos_angles"] = neighbor_cos_angles
     return inputs
