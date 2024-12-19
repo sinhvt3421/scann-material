@@ -13,20 +13,18 @@ import numpy as np
 import yaml
 
 from scann.models import SCANN
-from utils.general import prepare_input_pmt, process_xyz_pmt, process_mol_xyz, prepare_mol
+from scann.utils.general import load_file, prepare_input_pmt
 
 
 def main(args):
     config = yaml.safe_load(open(os.path.join(args.trained_model, "config.yaml")))
 
     print("Reading input from file: ", args.file_name)
-    # struct = process_xyz_pmt(args.file_name)
+    struct = load_file(
+        args.file_name, mol=True
+    )  # True if molecule file else False for crystals, file format support by Pymatgen
 
-    # inputs = prepare_input_pmt(struct)
-
-    struct = process_mol_xyz(args.file_name)
-
-    inputs = prepare_mol(struct)
+    inputs = prepare_input_pmt(struct, d_t=4.0, w_t=0.4, angle=True)  # angle = True if use SCANN+, else False for SCANN
 
     print("Load pretrained weight for target ", config["hyper"]["target"])
     model = SCANN.load_model_infer(
@@ -45,15 +43,15 @@ def main(args):
     save_xyz = "{}_ga_scores_{}.xyz".format(struct_name, config["hyper"]["target"])
 
     with open(os.path.join(args.save_path, save_xyz), "w") as f:
-        f.write(str(len(struct["Atoms"])) + "\n")
+        f.write(str(len(struct)) + "\n")
         f.write("XXX \n")
-        for i in range(len(struct["Atoms"])):
+        for i in range(len(struct)):
             f.write(
                 "{}\t{}\t{}\t{}\t{}\n".format(
-                    struct["Atoms"][i],
-                    struct["Coords"][i][0],
-                    struct["Coords"][i][1],
-                    struct["Coords"][i][2],
+                    struct.sites[i].label,
+                    struct.sites[i].x,
+                    struct.sites[i].y,
+                    struct.sites[i].z,
                     attn_global[0][i][0],
                 )
             )
